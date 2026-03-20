@@ -1,52 +1,41 @@
 ---
 title: "Plugin SDK Migration"
 sidebarTitle: "SDK Migration"
-summary: "Migrate from the legacy backwards-compatibility layer to the modern plugin SDK"
+summary: "Migrate from legacy compat surfaces to focused plugin-sdk subpaths and injected runtime helpers"
 read_when:
   - You see the OPENCLAW_PLUGIN_SDK_COMPAT_DEPRECATED warning
   - You see the OPENCLAW_EXTENSION_API_DEPRECATED warning
-  - You are updating a plugin to the modern plugin architecture
+  - You are updating a plugin from the monolithic plugin-sdk import to scoped subpaths
+  - You are updating a plugin away from openclaw/extension-api
   - You maintain an external OpenClaw plugin
 ---
 
 # Plugin SDK Migration
 
-OpenClaw has moved from a broad backwards-compatibility layer to a modern plugin
-architecture with focused, documented imports. If your plugin was built before
-the new architecture, this guide helps you migrate.
+OpenClaw is migrating from broad compatibility surfaces to narrower, documented
+contracts:
 
-## What is changing
+- `openclaw/plugin-sdk/compat` -> focused `openclaw/plugin-sdk/<subpath>` imports
+- `openclaw/extension-api` -> injected runtime helpers such as `api.runtime.agent.*`
 
-The old plugin system provided two wide-open surfaces that let plugins import
-anything they needed from a single entry point:
+This page explains what changed, why, and how to migrate.
 
-- **`openclaw/plugin-sdk/compat`** — a single import that re-exported dozens of
-  helpers. It was introduced to keep older hook-based plugins working while the
-  new plugin architecture was being built.
-- **`openclaw/extension-api`** — a bridge that gave plugins direct access to
-  host-side helpers like the embedded agent runner.
-
-Both surfaces are now **deprecated**. They still work at runtime, but new
-plugins must not use them, and existing plugins should migrate before the next
-major release removes them.
-
-<Warning>
-  The backwards-compatibility layer will be removed in a future major release.
-  Plugins that still import from these surfaces will break when that happens.
-</Warning>
+<Info>
+  The compat import still works at runtime. This is a deprecation warning, not
+  a breaking change yet. But new plugins **must not** use it, and existing
+  plugins should migrate before the next major release removes it.
+</Info>
 
 ## Why this changed
 
-The old approach caused problems:
+The old monolithic `openclaw/plugin-sdk/compat` re-exported everything from one
+entry point. This caused slow startup (importing one helper loaded dozens of
+unrelated modules), circular dependency risk, and an unclear API surface.
 
-- **Slow startup** — importing one helper loaded dozens of unrelated modules
-- **Circular dependencies** — broad re-exports made it easy to create import cycles
-- **Unclear API surface** — no way to tell which exports were stable vs internal
+Focused subpaths fix all three: each subpath is a small, self-contained module
+with a clear purpose.
 
-The modern plugin SDK fixes this: each import path (`openclaw/plugin-sdk/\<subpath\>`)
-is a small, self-contained module with a clear purpose and documented contract.
-
-## How to migrate
+## Migration steps
 
 <Steps>
   <Step title="Find deprecated imports">
@@ -54,66 +43,91 @@ is a small, self-contained module with a clear purpose and documented contract.
 
     ```bash
     grep -r "plugin-sdk/compat" my-plugin/
-    grep -r "openclaw/extension-api" my-plugin/
+    grep -r "openclaw/extension-api" extensions/my-plugin/
     ```
 
   </Step>
 
-  <Step title="Replace with focused imports">
-    Each export from the old surface maps to a specific modern import path:
+  <Step title="Replace with focused subpaths or runtime injection">
+    Each export from compat maps to a specific subpath. Replace the import
+    source:
 
     ```typescript
-    // Before (deprecated backwards-compatibility layer)
+    // Before (compat entry)
     import {
       createChannelReplyPipeline,
       createPluginRuntimeStore,
       resolveControlCommandGate,
     } from "openclaw/plugin-sdk/compat";
 
-    // After (modern focused imports)
+    // After (focused subpaths)
     import { createChannelReplyPipeline } from "openclaw/plugin-sdk/channel-reply-pipeline";
     import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
     import { resolveControlCommandGate } from "openclaw/plugin-sdk/command-auth";
     ```
 
-    For host-side helpers, use the injected plugin runtime instead of importing
-    directly:
+    If your plugin imports from `openclaw/extension-api`, you will now see:
+
+    ```text
+    [OPENCLAW_EXTENSION_API_DEPRECATED] Warning: openclaw/extension-api is deprecated.
+    Migrate to api.runtime.agent.* or focused openclaw/plugin-sdk/<subpath> imports.
+    ```
+
+    That bridge also still works at runtime today. It exists to preserve older
+    plugins while they migrate to the injected plugin runtime.
+
+    Move host-side helpers onto the injected plugin runtime instead of
+    importing them directly:
 
     ```typescript
     // Before (deprecated extension-api bridge)
     import { runEmbeddedPiAgent } from "openclaw/extension-api";
-    const result = await runEmbeddedPiAgent({ sessionId, prompt });
 
-    // After (injected runtime)
-    const result = await api.runtime.agent.runEmbeddedPiAgent({ sessionId, prompt });
+    const result = await runEmbeddedPiAgent({
+      sessionId,
+      sessionFile,
+      workspaceDir,
+      prompt,
+      timeoutMs,
+    });
+
+    // After (preferred injected runtime)
+    const result = await api.runtime.agent.runEmbeddedPiAgent({
+      sessionId,
+      sessionFile,
+      workspaceDir,
+      prompt,
+      timeoutMs,
+    });
     ```
 
-    The same pattern applies to other legacy bridge helpers:
+    The same pattern applies to the other legacy `extension-api` helpers:
 
-    | Old import | Modern equivalent |
-    | --- | --- |
-    | `resolveAgentDir` | `api.runtime.agent.resolveAgentDir` |
-    | `resolveAgentWorkspaceDir` | `api.runtime.agent.resolveAgentWorkspaceDir` |
-    | `resolveAgentIdentity` | `api.runtime.agent.resolveAgentIdentity` |
-    | `resolveThinkingDefault` | `api.runtime.agent.resolveThinkingDefault` |
-    | `resolveAgentTimeoutMs` | `api.runtime.agent.resolveAgentTimeoutMs` |
-    | `ensureAgentWorkspace` | `api.runtime.agent.ensureAgentWorkspace` |
-    | session store helpers | `api.runtime.agent.session.*` |
+    - `resolveAgentDir` -> `api.runtime.agent.resolveAgentDir`
+    - `resolveAgentWorkspaceDir` -> `api.runtime.agent.resolveAgentWorkspaceDir`
+    - `resolveAgentIdentity` -> `api.runtime.agent.resolveAgentIdentity`
+    - `resolveThinkingDefault` -> `api.runtime.agent.resolveThinkingDefault`
+    - `resolveAgentTimeoutMs` -> `api.runtime.agent.resolveAgentTimeoutMs`
+    - `ensureAgentWorkspace` -> `api.runtime.agent.ensureAgentWorkspace`
+    - session store helpers -> `api.runtime.agent.session.*`
+
+    See the [subpath reference](#subpath-reference) below for the scoped import
+    mapping.
 
   </Step>
 
   <Step title="Build and test">
     ```bash
     pnpm build
-    pnpm test -- my-plugin/
+    pnpm test -- extensions/my-plugin/
     ```
   </Step>
 </Steps>
 
-## Import path reference
+## Subpath reference
 
-<Accordion title="Full import path table">
-  | Import path | Purpose | Key exports |
+<Accordion title="Full subpath table">
+  | Subpath | Purpose | Key exports |
   | --- | --- | --- |
   | `plugin-sdk/core` | Plugin entry definitions, base types | `defineChannelPluginEntry`, `definePluginEntry` |
   | `plugin-sdk/channel-setup` | Setup wizard adapters | `createOptionalChannelSetupSurface` |
@@ -137,22 +151,22 @@ is a small, self-contained module with a clear purpose and documented contract.
   | `plugin-sdk/testing` | Test utilities | Test helpers and mocks |
 </Accordion>
 
-Use the narrowest import that matches the job. If you cannot find an export,
+Use the narrowest subpath that matches the job. If you cannot find an export,
 check the source at `src/plugin-sdk/` or ask in Discord.
 
 ## Removal timeline
 
 | When                   | What happens                                                            |
 | ---------------------- | ----------------------------------------------------------------------- |
-| **Now**                | Deprecated surfaces emit runtime warnings                               |
-| **Next major release** | Deprecated surfaces will be removed; plugins still using them will fail |
+| **Now**                | Compat import and `openclaw/extension-api` emit runtime warnings        |
+| **Next major release** | These legacy bridges may be removed; plugins still using them will fail |
 
 All core plugins have already been migrated. External plugins should migrate
 before the next major release.
 
-## Suppressing the warnings temporarily
+## Suppressing the warning temporarily
 
-Set these environment variables while you work on migrating:
+Set this environment variable while you work on migrating:
 
 ```bash
 OPENCLAW_SUPPRESS_PLUGIN_SDK_COMPAT_WARNING=1 openclaw gateway run
@@ -164,5 +178,5 @@ This is a temporary escape hatch, not a permanent solution.
 ## Related
 
 - [Building Plugins](/plugins/building-plugins)
-- [Plugin Internals](/plugins/architecture)
+- [Plugin Architecture](/plugins/architecture)
 - [Plugin Manifest](/plugins/manifest)
