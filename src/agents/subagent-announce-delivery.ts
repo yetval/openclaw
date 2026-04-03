@@ -1,15 +1,4 @@
-import { resolveQueueSettings } from "../auto-reply/reply/queue.js";
-import { loadConfig } from "../config/config.js";
-import {
-  loadSessionStore,
-  resolveAgentIdFromSessionKey,
-  resolveMainSessionKey,
-  resolveStorePath,
-} from "../config/sessions.js";
-import { callGateway } from "../gateway/call.js";
-import { resolveExternalBestEffortDeliveryTarget } from "../infra/outbound/best-effort-delivery.js";
-import { createBoundDeliveryRouter } from "../infra/outbound/bound-delivery-router.js";
-import { resolveConversationIdFromTargets } from "../infra/outbound/conversation-id.js";
+import { parseExplicitTargetForChannel } from "../channels/plugins/target-parsing.js";
 import type { ConversationRef } from "../infra/outbound/session-binding-service.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import { normalizeAccountId, normalizeMainKey } from "../routing/session-key.js";
@@ -30,12 +19,21 @@ import {
 } from "../utils/message-channel.js";
 import { buildAnnounceIdempotencyKey, resolveQueueAnnounceId } from "./announce-idempotency.js";
 import type { AgentInternalEvent } from "./internal-events.js";
-import { isEmbeddedPiRunActive, queueEmbeddedPiMessage } from "./pi-embedded.js";
 import {
   runSubagentAnnounceDispatch,
   type SubagentAnnounceDeliveryResult,
 } from "./subagent-announce-dispatch.js";
 import { type AnnounceQueueItem, enqueueAnnounce } from "./subagent-announce-queue.js";
+import {
+  callGateway,
+  isEmbeddedPiRunActive,
+  loadConfig,
+  loadSessionStore,
+  queueEmbeddedPiMessage,
+  resolveAgentIdFromSessionKey,
+  resolveMainSessionKey,
+  resolveStorePath,
+} from "./subagent-announce.runtime.js";
 import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
 import type { SpawnSubagentMode } from "./subagent-spawn.js";
 
@@ -54,6 +52,15 @@ const defaultSubagentAnnounceDeliveryDeps: SubagentAnnounceDeliveryDeps = {
 
 let subagentAnnounceDeliveryDeps: SubagentAnnounceDeliveryDeps =
   defaultSubagentAnnounceDeliveryDeps;
+
+let subagentAnnounceDeliveryRuntimePromise: Promise<
+  typeof import("./subagent-announce-delivery.runtime.js")
+> | null = null;
+
+function loadSubagentAnnounceDeliveryRuntime() {
+  subagentAnnounceDeliveryRuntimePromise ??= import("./subagent-announce-delivery.runtime.js");
+  return subagentAnnounceDeliveryRuntimePromise;
+}
 
 function resolveDirectAnnounceTransientRetryDelaysMs() {
   return process.env.OPENCLAW_TEST_FAST === "1"
@@ -89,6 +96,52 @@ function summarizeDeliveryError(error: unknown): string {
     return JSON.stringify(error);
   } catch {
     return "error";
+  }
+}
+
+function parseTelegramAnnounceTarget(to: string): {
+  chatId: string;
+  chatType: "direct" | "group" | "unknown";
+} {
+  const parsed = parseExplicitTargetForChannel("telegram", to);
+  const chatId = parsed?.to?.trim() ?? to.trim();
+  const chatType =
+    parsed?.chatType === "direct" || parsed?.chatType === "group" ? parsed.chatType : "unknown";
+  return { chatId, chatType };
+}
+
+function shouldStripThreadFromAnnounceEntry(
+  normalizedRequester?: DeliveryContext,
+  normalizedEntry?: DeliveryContext,
+): boolean {
+  if (
+    !normalizedRequester?.to ||
+    normalizedRequester.threadId != null ||
+    normalizedEntry?.threadId == null
+  ) {
+    return false;
+  }
+  const requesterChannel = normalizedRequester.channel?.trim().toLowerCase();
+  if (requesterChannel && requesterChannel !== "telegram") {
+    return true;
+  }
+  if (!requesterChannel && !normalizedRequester.to.startsWith("telegram:")) {
+    return true;
+  }
+  try {
+    const requesterTarget = parseTelegramAnnounceTarget(normalizedRequester.to);
+    if (requesterTarget.chatType !== "group") {
+      return true;
+    }
+    const entryTarget = normalizedEntry.to
+      ? parseTelegramAnnounceTarget(normalizedEntry.to)
+      : undefined;
+    if (entryTarget && entryTarget.chatId !== requesterTarget.chatId) {
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
   }
 }
 
@@ -196,9 +249,7 @@ export function resolveAnnounceOrigin(
     );
   }
   const entryForMerge =
-    normalizedRequester?.to &&
-    normalizedRequester.threadId == null &&
-    normalizedEntry?.threadId != null
+    normalizedEntry && shouldStripThreadFromAnnounceEntry(normalizedRequester, normalizedEntry)
       ? (() => {
           const { threadId: _ignore, ...rest } = normalizedEntry;
           return rest;
@@ -215,6 +266,7 @@ export async function resolveSubagentCompletionOrigin(params: {
   spawnMode?: SpawnSubagentMode;
   expectsCompletionMessage: boolean;
 }): Promise<DeliveryContext | undefined> {
+  const deliveryRuntime = await loadSubagentAnnounceDeliveryRuntime();
   const requesterOrigin = normalizeDeliveryContext(params.requesterOrigin);
   const channel = requesterOrigin?.channel?.trim().toLowerCase();
   const to = requesterOrigin?.to?.trim();
@@ -225,14 +277,14 @@ export async function resolveSubagentCompletionOrigin(params: {
       : undefined;
   const conversationId =
     threadId ||
-    resolveConversationIdFromTargets({
+    deliveryRuntime.resolveConversationIdFromTargets({
       targets: [to],
     }) ||
     "";
   const requesterConversation: ConversationRef | undefined =
     channel && conversationId ? { channel, accountId, conversationId } : undefined;
 
-  const route = createBoundDeliveryRouter().resolveDestination({
+  const route = deliveryRuntime.createBoundDeliveryRouter().resolveDestination({
     eventKind: "task_completion",
     targetSessionKey: params.childSessionKey,
     requester: requesterConversation,
@@ -393,6 +445,7 @@ async function maybeQueueSubagentAnnounce(params: {
   if (params.signal?.aborted) {
     return "none";
   }
+  const deliveryRuntime = await loadSubagentAnnounceDeliveryRuntime();
   const { cfg, entry } = loadRequesterSessionEntry(params.requesterSessionKey);
   const canonicalKey = resolveRequesterStoreKey(cfg, params.requesterSessionKey);
   const sessionId = entry?.sessionId;
@@ -400,7 +453,7 @@ async function maybeQueueSubagentAnnounce(params: {
     return "none";
   }
 
-  const queueSettings = resolveQueueSettings({
+  const queueSettings = deliveryRuntime.resolveQueueSettings({
     cfg,
     channel: entry?.channel ?? entry?.lastChannel ?? entry?.origin?.provider,
     sessionEntry: entry,
@@ -467,6 +520,7 @@ async function sendSubagentAnnounceDirectly(params: {
       path: "none",
     };
   }
+  const deliveryRuntime = await loadSubagentAnnounceDeliveryRuntime();
   const cfg = subagentAnnounceDeliveryDeps.loadConfig();
   const announceTimeoutMs = resolveSubagentAnnounceTimeoutMs(cfg);
   const canonicalRequesterSessionKey = resolveRequesterStoreKey(
@@ -485,7 +539,7 @@ async function sendSubagentAnnounceDirectly(params: {
       ? effectiveDirectOrigin
       : requesterSessionOrigin;
     const deliveryTarget = !params.requesterIsSubagent
-      ? resolveExternalBestEffortDeliveryTarget({
+      ? deliveryRuntime.resolveExternalBestEffortDeliveryTarget({
           channel: effectiveDirectOrigin?.channel,
           to: effectiveDirectOrigin?.to,
           accountId: effectiveDirectOrigin?.accountId,

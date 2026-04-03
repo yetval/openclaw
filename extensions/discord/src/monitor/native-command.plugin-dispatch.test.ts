@@ -2,8 +2,11 @@ import { ChannelType } from "discord-api-types/v10";
 import type { NativeCommandSpec } from "openclaw/plugin-sdk/command-auth";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
 import { clearPluginCommands, registerPluginCommand } from "openclaw/plugin-sdk/plugin-runtime";
-import { setDefaultChannelPluginRegistryForTests } from "openclaw/plugin-sdk/testing";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  createTestRegistry,
+  setActivePluginRegistry,
+} from "../../../../test/helpers/plugins/plugin-registry.js";
 import {
   createMockCommandInteraction,
   type MockCommandInteraction,
@@ -338,7 +341,7 @@ describe("Discord native plugin command dispatch", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     clearPluginCommands();
-    setDefaultChannelPluginRegistryForTests();
+    setActivePluginRegistry(createTestRegistry());
     const actualPluginRuntime = await vi.importActual<
       typeof import("openclaw/plugin-sdk/plugin-runtime")
     >("openclaw/plugin-sdk/plugin-runtime");
@@ -599,6 +602,7 @@ describe("Discord native plugin command dispatch", () => {
         channel: "discord",
         from: "discord:channel:thread-123",
         to: "slash:owner",
+        sessionKey: "agent:main:discord:channel:thread-123",
         messageThreadId: "thread-123",
         threadParentId: "parent-456",
       }),

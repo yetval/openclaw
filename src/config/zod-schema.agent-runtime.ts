@@ -309,56 +309,6 @@ export const ToolsWebSearchSchema = z
       })
       .strict()
       .optional(),
-    brave: z
-      .object({
-        apiKey: SecretInputSchema.optional().register(sensitive),
-        baseUrl: z.string().optional(),
-        model: z.string().optional(),
-        mode: z.string().optional(),
-      })
-      .strict()
-      .optional(),
-    firecrawl: z
-      .object({
-        apiKey: SecretInputSchema.optional().register(sensitive),
-        baseUrl: z.string().optional(),
-        model: z.string().optional(),
-      })
-      .strict()
-      .optional(),
-    gemini: z
-      .object({
-        apiKey: SecretInputSchema.optional().register(sensitive),
-        baseUrl: z.string().optional(),
-        model: z.string().optional(),
-      })
-      .strict()
-      .optional(),
-    grok: z
-      .object({
-        apiKey: SecretInputSchema.optional().register(sensitive),
-        baseUrl: z.string().optional(),
-        model: z.string().optional(),
-        inlineCitations: z.boolean().optional(),
-      })
-      .strict()
-      .optional(),
-    kimi: z
-      .object({
-        apiKey: SecretInputSchema.optional().register(sensitive),
-        baseUrl: z.string().optional(),
-        model: z.string().optional(),
-      })
-      .strict()
-      .optional(),
-    perplexity: z
-      .object({
-        apiKey: SecretInputSchema.optional().register(sensitive),
-        baseUrl: z.string().optional(),
-        model: z.string().optional(),
-      })
-      .strict()
-      .optional(),
   })
   .strict()
   .optional();
@@ -366,6 +316,7 @@ export const ToolsWebSearchSchema = z
 export const ToolsWebFetchSchema = z
   .object({
     enabled: z.boolean().optional(),
+    provider: z.string().optional(),
     maxChars: z.number().int().positive().optional(),
     maxCharsCap: z.number().int().positive().optional(),
     maxResponseBytes: z.number().int().positive().optional(),
@@ -374,6 +325,8 @@ export const ToolsWebFetchSchema = z
     maxRedirects: z.number().int().nonnegative().optional(),
     userAgent: z.string().optional(),
     readability: z.boolean().optional(),
+    // Keep the legacy Firecrawl fetch shape loadable so existing installs can
+    // start and then migrate cleanly through doctor.
     firecrawl: z
       .object({
         enabled: z.boolean().optional(),
@@ -392,7 +345,6 @@ export const ToolsWebFetchSchema = z
 export const ToolsWebXSearchSchema = z
   .object({
     enabled: z.boolean().optional(),
-    apiKey: SecretInputSchema.optional().register(sensitive),
     model: z.string().optional(),
     inlineCitations: z.boolean().optional(),
     maxTurns: z.number().int().optional(),

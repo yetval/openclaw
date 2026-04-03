@@ -11,7 +11,10 @@ import {
   buildLegacyDmAccountAllowlistAdapter,
 } from "../../plugin-sdk/allowlist-config-edit.js";
 import { resolveApprovalApprovers } from "../../plugin-sdk/approval-approvers.js";
-import { createApproverRestrictedNativeApprovalAdapter } from "../../plugin-sdk/approval-runtime.js";
+import {
+  createApproverRestrictedNativeApprovalAdapter,
+  createResolvedApproverActionAuthAdapter,
+} from "../../plugin-sdk/approval-runtime.js";
 import { createScopedChannelConfigAdapter } from "../../plugin-sdk/channel-config-helpers.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "../../routing/session-key.js";
@@ -106,6 +109,42 @@ const slackCommandTestPlugin: ChannelPlugin = {
     resolveAccount: ({ cfg }) => cfg.channels?.slack ?? {},
     normalize: ({ values }) => values.map((value) => String(value).trim()).filter(Boolean),
     resolveDmAllowFrom: (account) => account.allowFrom ?? account.dm?.allowFrom,
+    resolveGroupPolicy: (account) => account.groupPolicy,
+    resolveGroupOverrides: () => undefined,
+  }),
+};
+
+const signalCommandTestPlugin: ChannelPlugin = {
+  ...createChannelTestPluginBase({
+    id: "signal",
+    label: "Signal",
+    docsPath: "/channels/signal",
+    capabilities: {
+      chatTypes: ["direct", "group"],
+      reactions: true,
+      media: true,
+      nativeCommands: true,
+    },
+  }),
+  auth: createResolvedApproverActionAuthAdapter({
+    channelLabel: "Signal",
+    resolveApprovers: ({ cfg, accountId }) => {
+      const signal = accountId ? cfg.channels?.signal?.accounts?.[accountId] : cfg.channels?.signal;
+      return resolveApprovalApprovers({
+        allowFrom: signal?.allowFrom,
+        defaultTo: signal?.defaultTo,
+        normalizeApprover: (value) => String(value).trim() || undefined,
+      });
+    },
+  }),
+  allowlist: buildLegacyDmAccountAllowlistAdapter({
+    channelId: "signal",
+    resolveAccount: ({ cfg, accountId }) =>
+      accountId
+        ? (cfg.channels?.signal?.accounts?.[accountId] ?? {})
+        : (cfg.channels?.signal ?? {}),
+    normalize: ({ values }) => values.map((value) => String(value).trim()).filter(Boolean),
+    resolveDmAllowFrom: (account) => account.allowFrom,
     resolveGroupPolicy: (account) => account.groupPolicy,
     resolveGroupOverrides: () => undefined,
   }),
@@ -251,6 +290,7 @@ const { parseInlineDirectives } = await import("./directive-handling.js");
 const { buildCommandContext, handleCommands } = await import("./commands.js");
 const { createTaskRecord, resetTaskRegistryForTests } =
   await import("../../tasks/task-registry.js");
+const { failTaskRunByRunId } = await import("../../tasks/task-executor.js");
 
 let testWorkspaceDir = os.tmpdir();
 
@@ -451,6 +491,26 @@ const telegramCommandTestPlugin: ChannelPlugin = {
     formatAllowFrom: normalizeTelegramAllowFromEntries,
   }),
   auth: telegramNativeApprovalAdapter.auth,
+  approvalCapability: {
+    resolveApproveCommandBehavior: ({ cfg, accountId, senderId, approvalKind }) => {
+      if (approvalKind !== "exec") {
+        return undefined;
+      }
+      if (isTelegramExecApprovalClientEnabled({ cfg, accountId })) {
+        return undefined;
+      }
+      if (
+        isTelegramExecApprovalAuthorizedSender({ cfg, accountId, senderId }) &&
+        !getTelegramExecApprovalApprovers({ cfg, accountId }).includes(senderId?.trim() ?? "")
+      ) {
+        return { kind: "ignore" } as const;
+      }
+      return {
+        kind: "reply",
+        text: "❌ Telegram exec approvals are not enabled for this bot account.",
+      } as const;
+    },
+  },
   pairing: {
     idLabel: "telegramUserId",
   },
@@ -505,6 +565,11 @@ function setMinimalChannelPluginRegistryForTests(): void {
       {
         pluginId: "slack",
         plugin: slackCommandTestPlugin,
+        source: "test",
+      },
+      {
+        pluginId: "signal",
+        plugin: signalCommandTestPlugin,
         source: "test",
       },
       {
@@ -799,6 +864,30 @@ describe("/approve command", () => {
     );
   });
 
+  it("accepts bare approve text for Slack-style manual approvals", async () => {
+    const cfg = {
+      commands: { text: true },
+      channels: { slack: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("approve abc allow-once", cfg, {
+      Provider: "slack",
+      Surface: "slack",
+      SenderId: "U123",
+    });
+
+    callGatewayMock.mockResolvedValue({ ok: true });
+
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("Approval allow-once submitted");
+    expect(callGatewayMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "exec.approval.resolve",
+        params: { id: "abc", decision: "allow-once" },
+      }),
+    );
+  });
+
   it("accepts Telegram command mentions for /approve", async () => {
     const cfg = createTelegramApproveCfg();
     const params = buildParams("/approve@bot abc12345 allow-once", cfg, {
@@ -827,6 +916,35 @@ describe("/approve command", () => {
       Provider: "telegram",
       Surface: "telegram",
       SenderId: "123",
+    });
+    params.command.isAuthorizedSender = false;
+
+    callGatewayMock.mockResolvedValue({ ok: true });
+
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("Approval allow-once submitted");
+    expect(callGatewayMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "exec.approval.resolve",
+        params: { id: "abc12345", decision: "allow-once" },
+      }),
+    );
+  });
+
+  it("accepts Signal /approve from configured approvers even when chat access is otherwise blocked", async () => {
+    const cfg = {
+      commands: { text: true },
+      channels: {
+        signal: {
+          allowFrom: ["+15551230000"],
+        },
+      },
+    } as OpenClawConfig;
+    const params = buildParams("/approve abc12345 allow-once", cfg, {
+      Provider: "signal",
+      Surface: "signal",
+      SenderId: "+15551230000",
     });
     params.command.isAuthorizedSender = false;
 
@@ -896,7 +1014,7 @@ describe("/approve command", () => {
     expect(callGatewayMock).not.toHaveBeenCalled();
   });
 
-  it("accepts Telegram /approve from exec target recipients even when native approvals are disabled", async () => {
+  it("accepts Telegram /approve from exec target recipients when native approvals are disabled", async () => {
     const cfg = {
       commands: { text: true },
       approvals: {
@@ -1164,7 +1282,7 @@ describe("/approve command", () => {
         expectGatewayCalls: 2,
       },
       {
-        name: "telegram approvals disabled",
+        name: "telegram disabled native delivery reports the channel-disabled message",
         cfg: createTelegramApproveCfg(null),
         commandBody: "/approve abc12345 allow-once",
         ctx: {
@@ -1893,6 +2011,7 @@ describe("handleCommands /allowlist", () => {
                 commands: { text: true, config: true },
                 channels: { telegram: { allowFrom: ["123"] } },
               } as OpenClawConfig);
+              params.command.senderIsOwner = true;
               const result = await handleCommands(params);
 
               expect(result.shouldContinue).toBe(false);
@@ -1935,6 +2054,7 @@ describe("handleCommands /allowlist", () => {
               AccountId: "work",
             },
           );
+          params.command.senderIsOwner = true;
           const result = await handleCommands(params);
 
           expect(result.shouldContinue, "selected account scope").toBe(false);
@@ -1974,11 +2094,47 @@ describe("handleCommands /allowlist", () => {
       Provider: "telegram",
       Surface: "telegram",
     });
+    params.command.senderIsOwner = true;
     const result = await handleCommands(params);
 
     expect(result.shouldContinue).toBe(false);
     expect(result.reply?.text).toContain("channels.telegram.accounts.work.configWrites=true");
     expect(writeConfigFileMock.mock.calls.length).toBe(previousWriteCount);
+  });
+
+  it("blocks allowlist writes from authorized non-owner senders, including cross-channel targets", async () => {
+    const cfg = {
+      commands: {
+        text: true,
+        config: true,
+        allowFrom: { telegram: ["*"] },
+        ownerAllowFrom: ["discord:owner-discord-id"],
+      },
+      channels: {
+        telegram: { allowFrom: ["*"], configWrites: true },
+        discord: { allowFrom: ["owner-discord-id"], configWrites: true },
+      },
+    } as OpenClawConfig;
+    const params = buildPolicyParams(
+      "/allowlist add dm --channel discord attacker-discord-id",
+      cfg,
+      {
+        Provider: "telegram",
+        Surface: "telegram",
+        SenderId: "telegram-attacker",
+        From: "telegram-attacker",
+      },
+    );
+
+    expect(params.command.isAuthorizedSender).toBe(true);
+    expect(params.command.senderIsOwner).toBe(false);
+
+    const result = await handleCommands(params);
+
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply).toBeUndefined();
+    expect(writeConfigFileMock).not.toHaveBeenCalled();
+    expect(addChannelAllowFromStoreEntryMock).not.toHaveBeenCalled();
   });
 
   it("removes default-account entries from scoped and legacy pairing stores", async () => {
@@ -1997,6 +2153,7 @@ describe("handleCommands /allowlist", () => {
       channels: { telegram: { allowFrom: ["123"] } },
     } as OpenClawConfig;
     const params = buildPolicyParams("/allowlist remove dm --store 789", cfg);
+    params.command.senderIsOwner = true;
     const result = await handleCommands(params);
 
     expect(result.shouldContinue).toBe(false);
@@ -2019,6 +2176,7 @@ describe("handleCommands /allowlist", () => {
       channels: { telegram: { allowFrom: ["123"] } },
     } as OpenClawConfig;
     const params = buildPolicyParams("/allowlist add dm --account __proto__ 789", cfg);
+    params.command.senderIsOwner = true;
     const result = await handleCommands(params);
 
     expect(result.shouldContinue).toBe(false);
@@ -2078,6 +2236,7 @@ describe("handleCommands /allowlist", () => {
           Provider: testCase.provider,
           Surface: testCase.provider,
         });
+        params.command.senderIsOwner = true;
         const result = await handleCommands(params);
 
         expect(result.shouldContinue).toBe(false);
@@ -2238,10 +2397,19 @@ describe("/models command", () => {
 describe("handleCommands plugin commands", () => {
   it("dispatches registered plugin commands", async () => {
     clearPluginCommands();
+    let receivedCtx:
+      | {
+          sessionKey?: string;
+          sessionId?: string;
+        }
+      | undefined;
     const result = registerPluginCommand("test-plugin", {
       name: "card",
       description: "Test card",
-      handler: async () => ({ text: "from plugin" }),
+      handler: async (ctx) => {
+        receivedCtx = ctx;
+        return { text: "from plugin" };
+      },
     });
     expect(result.ok).toBe(true);
 
@@ -2250,10 +2418,19 @@ describe("handleCommands plugin commands", () => {
       channels: { whatsapp: { allowFrom: ["*"] } },
     } as OpenClawConfig;
     const params = buildParams("/card", cfg);
+    params.sessionKey = "agent:main:whatsapp:direct:test-user";
+    params.sessionEntry = {
+      sessionId: "session-plugin-command",
+      updatedAt: Date.now(),
+    };
     const commandResult = await handleCommands(params);
 
     expect(commandResult.shouldContinue).toBe(false);
     expect(commandResult.reply?.text).toBe("from plugin");
+    expect(receivedCtx).toMatchObject({
+      sessionKey: "agent:main:whatsapp:direct:test-user",
+      sessionId: "session-plugin-command",
+    });
     clearPluginCommands();
   });
 });
@@ -2633,8 +2810,7 @@ describe("handleCommands subagents", () => {
     });
     createTaskRecord({
       runtime: "subagent",
-      ownerKey: "agent:main:main",
-      scopeKind: "session",
+      requesterSessionKey: "agent:main:main",
       childSessionKey: "agent:main:subagent:abc",
       runId: "run-1",
       task: "do thing",
@@ -2655,6 +2831,66 @@ describe("handleCommands subagents", () => {
     expect(result.reply?.text).toContain("Status: done");
     expect(result.reply?.text).toContain("TaskStatus: succeeded");
     expect(result.reply?.text).toContain("Task summary: Completed the requested task");
+  });
+
+  it("sanitizes leaked task details in /subagents info", async () => {
+    const now = Date.now();
+    addSubagentRunForTests({
+      runId: "run-1",
+      childSessionKey: "agent:main:subagent:abc",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "Inspect the stuck run",
+      cleanup: "keep",
+      createdAt: now - 20_000,
+      startedAt: now - 20_000,
+      endedAt: now - 1_000,
+      outcome: {
+        status: "error",
+        error: [
+          "OpenClaw runtime context (internal):",
+          "This context is runtime-generated, not user-authored. Keep internal details private.",
+          "",
+          "[Internal task completion event]",
+          "source: subagent",
+        ].join("\n"),
+      },
+    });
+    createTaskRecord({
+      runtime: "subagent",
+      requesterSessionKey: "agent:main:main",
+      childSessionKey: "agent:main:subagent:abc",
+      runId: "run-1",
+      task: "Inspect the stuck run",
+      status: "running",
+      deliveryStatus: "delivered",
+    });
+    failTaskRunByRunId({
+      runId: "run-1",
+      endedAt: now - 1_000,
+      error: [
+        "OpenClaw runtime context (internal):",
+        "This context is runtime-generated, not user-authored. Keep internal details private.",
+        "",
+        "[Internal task completion event]",
+        "source: subagent",
+      ].join("\n"),
+      terminalSummary: "Needs manual follow-up.",
+    });
+    const cfg = {
+      commands: { text: true },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+      session: { mainKey: "main", scope: "per-sender" },
+    } as OpenClawConfig;
+    const params = buildParams("/subagents info 1", cfg);
+    const result = await handleCommands(params);
+
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("Subagent info");
+    expect(result.reply?.text).toContain("Outcome: error");
+    expect(result.reply?.text).toContain("Task summary: Needs manual follow-up.");
+    expect(result.reply?.text).not.toContain("OpenClaw runtime context (internal):");
+    expect(result.reply?.text).not.toContain("Internal task completion event");
   });
 
   it("kills subagents via /kill alias without a confirmation reply", async () => {

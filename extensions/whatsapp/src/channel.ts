@@ -1,15 +1,18 @@
+import { createRequire } from "node:module";
 import { buildDmGroupAccountAllowlistAdapter } from "openclaw/plugin-sdk/allowlist-config-edit";
 import { resolveReactionMessageId } from "openclaw/plugin-sdk/channel-actions";
 import { createChatChannelPlugin } from "openclaw/plugin-sdk/core";
-import { chunkText } from "openclaw/plugin-sdk/reply-runtime";
+import { chunkText } from "openclaw/plugin-sdk/reply-chunking";
 import {
   createAsyncComputedAccountStatusAdapter,
   createDefaultChannelRuntimeState,
 } from "openclaw/plugin-sdk/status-helpers";
 // WhatsApp-specific imports from local extension code (moved from src/web/ and src/channels/plugins/)
-import { resolveWhatsAppAccount, type ResolvedWhatsAppAccount } from "./accounts.js";
-import { handleWhatsAppAction } from "./action-runtime.js";
-import { createWhatsAppLoginTool } from "./agent-tools-login.js";
+import {
+  listWhatsAppAccountIds,
+  resolveWhatsAppAccount,
+  type ResolvedWhatsAppAccount,
+} from "./accounts.js";
 import { whatsappApprovalAuth } from "./approval-auth.js";
 import type { WebChannelStatus } from "./auto-reply/types.js";
 import {
@@ -21,6 +24,7 @@ import {
   resolveWhatsAppGroupToolPolicy,
 } from "./group-policy.js";
 import { looksLikeWhatsAppTargetId, normalizeWhatsAppMessagingTarget } from "./normalize.js";
+import { resolveWhatsAppReactionLevel } from "./reaction-level.js";
 import {
   createActionGate,
   createWhatsAppOutboundBase,
@@ -33,11 +37,11 @@ import {
   resolveWhatsAppMentionStripRegexes,
   type ChannelMessageActionName,
   type ChannelPlugin,
+  type OpenClawConfig,
   isWhatsAppGroupJid,
   normalizeWhatsAppTarget,
 } from "./runtime-api.js";
 import { getWhatsAppRuntime } from "./runtime.js";
-import { sendMessageWhatsApp, sendPollWhatsApp } from "./send.js";
 import { resolveWhatsAppOutboundSessionRoute } from "./session-route.js";
 import { whatsappSetupAdapter } from "./setup-core.js";
 import {
@@ -47,6 +51,31 @@ import {
   WHATSAPP_CHANNEL,
 } from "./shared.js";
 import { collectWhatsAppStatusIssues } from "./status-issues.js";
+
+type WhatsAppSendModule = typeof import("./send.js");
+type WhatsAppActionRuntimeModule = typeof import("./action-runtime.js");
+
+let whatsAppSendModulePromise: Promise<WhatsAppSendModule> | undefined;
+let whatsAppActionRuntimeModulePromise: Promise<WhatsAppActionRuntimeModule> | undefined;
+let whatsAppAgentToolsModuleCache: typeof import("./agent-tools-login.js") | null = null;
+
+const require = createRequire(import.meta.url);
+
+async function loadWhatsAppSendModule() {
+  whatsAppSendModulePromise ??= import("./send.js");
+  return await whatsAppSendModulePromise;
+}
+
+async function loadWhatsAppActionRuntimeModule() {
+  whatsAppActionRuntimeModulePromise ??= import("./action-runtime.js");
+  return await whatsAppActionRuntimeModulePromise;
+}
+
+function loadWhatsAppAgentToolsModule() {
+  whatsAppAgentToolsModuleCache ??=
+    require("./agent-tools-login.js") as typeof import("./agent-tools-login.js");
+  return whatsAppAgentToolsModuleCache;
+}
 
 function normalizeWhatsAppPayloadText(text: string | undefined): string {
   return (text ?? "").replace(/^(?:[ \t]*\r?\n)+/, "");
@@ -63,6 +92,54 @@ function parseWhatsAppExplicitTarget(raw: string) {
   };
 }
 
+function areWhatsAppAgentReactionsEnabled(params: { cfg: OpenClawConfig; accountId?: string }) {
+  if (!params.cfg.channels?.whatsapp) {
+    return false;
+  }
+  const gate = createActionGate(params.cfg.channels.whatsapp.actions);
+  if (!gate("reactions")) {
+    return false;
+  }
+  return resolveWhatsAppReactionLevel({
+    cfg: params.cfg,
+    accountId: params.accountId,
+  }).agentReactionsEnabled;
+}
+
+function hasAnyWhatsAppAccountWithAgentReactionsEnabled(cfg: OpenClawConfig) {
+  if (!cfg.channels?.whatsapp) {
+    return false;
+  }
+  return listWhatsAppAccountIds(cfg).some((accountId) => {
+    const account = resolveWhatsAppAccount({ cfg, accountId });
+    if (!account.enabled) {
+      return false;
+    }
+    return areWhatsAppAgentReactionsEnabled({
+      cfg,
+      accountId,
+    });
+  });
+}
+
+function resolveWhatsAppAgentReactionGuidance(params: { cfg: OpenClawConfig; accountId?: string }) {
+  if (!params.cfg.channels?.whatsapp) {
+    return undefined;
+  }
+  const gate = createActionGate(params.cfg.channels.whatsapp.actions);
+  if (!gate("reactions")) {
+    return undefined;
+  }
+  const resolved = resolveWhatsAppReactionLevel({
+    cfg: params.cfg,
+    accountId: params.accountId,
+  });
+  if (!resolved.agentReactionsEnabled) {
+    return undefined;
+  }
+  return resolved.agentReactionGuidance;
+}
+
 export const whatsappPlugin: ChannelPlugin<ResolvedWhatsAppAccount> =
   createChatChannelPlugin<ResolvedWhatsAppAccount>({
     pairing: {
@@ -71,8 +148,10 @@ export const whatsappPlugin: ChannelPlugin<ResolvedWhatsAppAccount> =
     outbound: {
       ...createWhatsAppOutboundBase({
         chunker: chunkText,
-        sendMessageWhatsApp,
-        sendPollWhatsApp,
+        sendMessageWhatsApp: async (...args) =>
+          await (await loadWhatsAppSendModule()).sendMessageWhatsApp(...args),
+        sendPollWhatsApp: async (...args) =>
+          await (await loadWhatsAppSendModule()).sendPollWhatsApp(...args),
         shouldLogVerbose: () => getWhatsAppRuntime().logging.shouldLogVerbose(),
         resolveTarget: ({ to, allowFrom, mode }) =>
           resolveWhatsAppOutboundTarget({ to, allowFrom, mode }),
@@ -94,7 +173,7 @@ export const whatsappPlugin: ChannelPlugin<ResolvedWhatsAppAccount> =
         isConfigured: async (account) =>
           await (await loadWhatsAppChannelRuntime()).webAuthExists(account.authDir),
       }),
-      agentTools: () => [createWhatsAppLoginTool()],
+      agentTools: () => [loadWhatsAppAgentToolsModule().createWhatsAppLoginTool()],
       allowlist: buildDmGroupAccountAllowlistAdapter({
         channelId: "whatsapp",
         resolveAccount: resolveWhatsAppAccount,
@@ -110,6 +189,15 @@ export const whatsappPlugin: ChannelPlugin<ResolvedWhatsAppAccount> =
       commands: {
         enforceOwnerForCommands: true,
         skipWhenConfigEmpty: true,
+      },
+      agentPrompt: {
+        reactionGuidance: ({ cfg, accountId }) => {
+          const level = resolveWhatsAppAgentReactionGuidance({
+            cfg,
+            accountId: accountId ?? undefined,
+          });
+          return level ? { level, channelLabel: "WhatsApp" } : undefined;
+        },
       },
       messaging: {
         normalizeTarget: normalizeWhatsAppMessagingTarget,
@@ -140,13 +228,20 @@ export const whatsappPlugin: ChannelPlugin<ResolvedWhatsAppAccount> =
         listGroups: async (params) => listWhatsAppDirectoryGroupsFromConfig(params),
       },
       actions: {
-        describeMessageTool: ({ cfg }) => {
+        describeMessageTool: ({ cfg, accountId }) => {
           if (!cfg.channels?.whatsapp) {
             return null;
           }
           const gate = createActionGate(cfg.channels.whatsapp.actions);
           const actions = new Set<ChannelMessageActionName>();
-          if (gate("reactions")) {
+          const canReact =
+            accountId != null
+              ? areWhatsAppAgentReactionsEnabled({
+                  cfg,
+                  accountId: accountId ?? undefined,
+                })
+              : hasAnyWhatsAppAccountWithAgentReactionsEnabled(cfg);
+          if (canReact) {
             actions.add("react");
           }
           if (gate("polls")) {
@@ -190,7 +285,9 @@ export const whatsappPlugin: ChannelPlugin<ResolvedWhatsAppAccount> =
           const messageId = String(messageIdRaw);
           const emoji = readStringParam(params, "emoji", { allowEmpty: true });
           const remove = typeof params.remove === "boolean" ? params.remove : undefined;
-          return await handleWhatsAppAction(
+          return await (
+            await loadWhatsAppActionRuntimeModule()
+          ).handleWhatsAppAction(
             {
               action: "react",
               chatJid:
