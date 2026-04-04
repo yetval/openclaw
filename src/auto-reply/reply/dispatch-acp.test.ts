@@ -57,6 +57,7 @@ const sessionStoreMocks = vi.hoisted(() => ({
   updateSessionStore: vi.fn(
     async (_storePath: string, updater: (store: Record<string, unknown>) => unknown) => updater({}),
   ),
+  updateSessionStoreEntry: vi.fn(async (_params: unknown) => null),
 }));
 
 const bindingServiceMocks = vi.hoisted(() => ({
@@ -260,6 +261,8 @@ describe("tryDispatchAcpReply", () => {
         storePath: string,
         updater: (store: Record<string, unknown>) => unknown,
       ) => sessionStoreMocks.updateSessionStore(storePath, updater),
+      updateSessionStoreEntry: (params: unknown) =>
+        sessionStoreMocks.updateSessionStoreEntry(params),
     }));
     vi.doMock("../../infra/outbound/session-binding-service.js", () => ({
       getSessionBindingService: () => ({
