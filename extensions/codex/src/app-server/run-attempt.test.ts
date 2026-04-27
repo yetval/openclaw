@@ -34,6 +34,22 @@ import {
 
 let tempDir: string;
 
+const sharedClientMocks = vi.hoisted(() => ({
+  createIsolatedCodexAppServerClientMock: vi.fn(),
+  clearSharedCodexAppServerClientMock: vi.fn(),
+}));
+
+vi.mock("./shared-client.js", async () => {
+  const actual = await vi.importActual<typeof import("./shared-client.js")>("./shared-client.js");
+  return {
+    ...actual,
+    createIsolatedCodexAppServerClient: (...args: unknown[]) =>
+      sharedClientMocks.createIsolatedCodexAppServerClientMock(...args),
+    clearSharedCodexAppServerClient: (...args: unknown[]) =>
+      sharedClientMocks.clearSharedCodexAppServerClientMock(...args),
+  };
+});
+
 function createParams(sessionFile: string, workspaceDir: string): EmbeddedRunAttemptParams {
   return {
     prompt: "hello",
@@ -306,6 +322,8 @@ describe("runCodexAppServerAttempt", () => {
   beforeEach(async () => {
     resetAgentEventsForTest();
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-run-"));
+    sharedClientMocks.createIsolatedCodexAppServerClientMock.mockReset();
+    sharedClientMocks.clearSharedCodexAppServerClientMock.mockReset();
   });
 
   afterEach(async () => {
@@ -1286,6 +1304,70 @@ describe("runCodexAppServerAttempt", () => {
       "codex app-server startup timed out",
     );
     expect(queueAgentHarnessMessage("session-1", "after timeout")).toBe(false);
+  });
+
+  it("uses an isolated app-server client for spawned runs so auth failures do not clear the shared client", async () => {
+    const isolatedClient = {
+      request: vi.fn(async (method: string) => {
+        if (method === "thread/start") {
+          throw new Error("401 authentication_error: Invalid bearer token");
+        }
+        return {};
+      }),
+      addNotificationHandler: vi.fn(() => () => undefined),
+      addRequestHandler: vi.fn(() => () => undefined),
+      close: vi.fn(),
+    };
+
+    sharedClientMocks.createIsolatedCodexAppServerClientMock.mockResolvedValue(isolatedClient);
+    __testing.setCodexAppServerClientFactoryForTests(async () => {
+      throw new Error("shared client should not be used for spawned runs");
+    });
+
+    const params = createParams(
+      path.join(tempDir, "session.jsonl"),
+      path.join(tempDir, "workspace"),
+    );
+    params.spawnedBy = "agent:main:session-1";
+
+    await expect(runCodexAppServerAttempt(params)).rejects.toThrow("Invalid bearer token");
+    expect(sharedClientMocks.createIsolatedCodexAppServerClientMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        timeoutMs: params.timeoutMs,
+        authProfileId: undefined,
+      }),
+    );
+    expect(sharedClientMocks.clearSharedCodexAppServerClientMock).not.toHaveBeenCalled();
+    expect(isolatedClient.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not isolate runs based on subagent session keys alone", async () => {
+    const sharedClient = {
+      request: vi.fn(async (method: string) => {
+        if (method === "thread/start") {
+          throw new Error("401 authentication_error: Invalid bearer token");
+        }
+        return {};
+      }),
+      addNotificationHandler: vi.fn(() => () => undefined),
+      addRequestHandler: vi.fn(() => () => undefined),
+    };
+
+    sharedClientMocks.createIsolatedCodexAppServerClientMock.mockRejectedValue(
+      new Error("isolated client should not be used"),
+    );
+    __testing.setCodexAppServerClientFactoryForTests(async () => sharedClient as never);
+
+    const params = createParams(
+      path.join(tempDir, "session.jsonl"),
+      path.join(tempDir, "workspace"),
+    );
+    params.sessionKey = "agent:main:subagent:child";
+
+    await expect(runCodexAppServerAttempt(params)).rejects.toThrow("Invalid bearer token");
+    expect(sharedClient.request).toHaveBeenCalledWith("thread/start", expect.anything());
+    expect(sharedClientMocks.createIsolatedCodexAppServerClientMock).not.toHaveBeenCalled();
+    expect(sharedClientMocks.clearSharedCodexAppServerClientMock).toHaveBeenCalledTimes(1);
   });
 
   it("passes the selected auth profile into app-server startup", async () => {

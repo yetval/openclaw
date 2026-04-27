@@ -65,7 +65,10 @@ import {
   type JsonValue,
 } from "./protocol.js";
 import { readCodexAppServerBinding, type CodexAppServerThreadBinding } from "./session-binding.js";
-import { clearSharedCodexAppServerClient } from "./shared-client.js";
+import {
+  clearSharedCodexAppServerClient,
+  createIsolatedCodexAppServerClient,
+} from "./shared-client.js";
 import {
   buildDeveloperInstructions,
   buildTurnStartParams,
@@ -86,6 +89,13 @@ type OpenClawCodingToolsOptions = NonNullable<
 >;
 
 let clientFactory = defaultCodexAppServerClientFactory;
+
+function shouldUseIsolatedCodexAppServerClient(params: EmbeddedRunAttemptParams): boolean {
+  // Spawned/helper runs should not be able to poison the shared Codex client
+  // used by the main session. Keep their app-server startup isolated so auth
+  // failures only fail the child run.
+  return Boolean(params.spawnedBy?.trim());
+}
 
 function emitCodexAppServerEvent(
   params: EmbeddedRunAttemptParams,
@@ -284,6 +294,10 @@ export async function runCodexAppServerAttempt(
   let thread: CodexAppServerThreadBinding;
   let trajectoryEndRecorded = false;
   let nativeHookRelay: NativeHookRelayRegistrationHandle | undefined;
+  const useIsolatedStartupClient = shouldUseIsolatedCodexAppServerClient(params);
+  const isolatedStartupAbortController = useIsolatedStartupClient
+    ? new AbortController()
+    : undefined;
   try {
     emitCodexAppServerEvent(params, {
       stream: "codex_app_server.lifecycle",
@@ -311,23 +325,37 @@ export async function runCodexAppServerAttempt(
       timeoutFloorMs: options.startupTimeoutFloorMs,
       signal: runAbortController.signal,
       operation: async () => {
-        const startupClient = await clientFactory(appServer.start, startupAuthProfileId);
-        await ensureCodexComputerUse({
-          client: startupClient,
-          pluginConfig: options.pluginConfig,
-          timeoutMs: appServer.requestTimeoutMs,
-          signal: runAbortController.signal,
-        });
-        const startupThread = await startOrResumeThread({
-          client: startupClient,
-          params,
-          cwd: effectiveWorkspace,
-          dynamicTools: toolBridge.specs,
-          appServer,
-          developerInstructions: promptBuild.developerInstructions,
-          config: nativeHookRelayConfig,
-        });
-        return { client: startupClient, thread: startupThread };
+        const startupClient = useIsolatedStartupClient
+          ? await createIsolatedCodexAppServerClient({
+              startOptions: appServer.start,
+              timeoutMs: params.timeoutMs,
+              authProfileId: startupAuthProfileId,
+              signal: isolatedStartupAbortController?.signal,
+            })
+          : await clientFactory(appServer.start, startupAuthProfileId);
+        try {
+          await ensureCodexComputerUse({
+            client: startupClient,
+            pluginConfig: options.pluginConfig,
+            timeoutMs: appServer.requestTimeoutMs,
+            signal: runAbortController.signal,
+          });
+          const startupThread = await startOrResumeThread({
+            client: startupClient,
+            params,
+            cwd: effectiveWorkspace,
+            dynamicTools: toolBridge.specs,
+            appServer,
+            developerInstructions: promptBuild.developerInstructions,
+            config: nativeHookRelayConfig,
+          });
+          return { client: startupClient, thread: startupThread };
+        } catch (error) {
+          if (useIsolatedStartupClient) {
+            startupClient.close();
+          }
+          throw error;
+        }
       },
     }));
     emitCodexAppServerEvent(params, {
@@ -336,7 +364,11 @@ export async function runCodexAppServerAttempt(
     });
   } catch (error) {
     nativeHookRelay?.unregister();
-    clearSharedCodexAppServerClient();
+    if (!useIsolatedStartupClient) {
+      clearSharedCodexAppServerClient();
+    } else {
+      isolatedStartupAbortController?.abort(error);
+    }
     params.abortSignal?.removeEventListener("abort", abortFromUpstream);
     throw error;
   }
@@ -773,6 +805,9 @@ export async function runCodexAppServerAttempt(
     notificationCleanup();
     requestCleanup();
     nativeHookRelay?.unregister();
+    if (useIsolatedStartupClient) {
+      client.close();
+    }
     runAbortController.signal.removeEventListener("abort", abortListener);
     params.abortSignal?.removeEventListener("abort", abortFromUpstream);
     clearActiveEmbeddedRun(params.sessionId, handle, params.sessionKey);
