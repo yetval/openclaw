@@ -392,6 +392,12 @@ export async function runCodexAppServerAttempt(
   const isolatedStartupAbortController = useIsolatedStartupClient
     ? new AbortController()
     : undefined;
+  let isolatedStartupClient: CodexAppServerClient | undefined;
+  const closeIsolatedStartupClient = () => {
+    const clientToClose = isolatedStartupClient;
+    isolatedStartupClient = undefined;
+    clientToClose?.close();
+  };
   try {
     emitCodexAppServerEvent(params, {
       stream: "codex_app_server.lifecycle",
@@ -428,6 +434,13 @@ export async function runCodexAppServerAttempt(
               signal: isolatedStartupAbortController?.signal,
             })
           : await clientFactory(appServer.start, startupAuthProfileId, agentDir);
+        if (useIsolatedStartupClient) {
+          isolatedStartupClient = startupClient;
+          if (runAbortController.signal.aborted || isolatedStartupAbortController?.signal.aborted) {
+            closeIsolatedStartupClient();
+            throw new Error("codex app-server startup aborted");
+          }
+        }
         try {
           await ensureCodexComputerUse({
             client: startupClient,
@@ -447,7 +460,7 @@ export async function runCodexAppServerAttempt(
           return { client: startupClient, thread: startupThread };
         } catch (error) {
           if (useIsolatedStartupClient) {
-            startupClient.close();
+            closeIsolatedStartupClient();
           }
           throw error;
         }
@@ -463,6 +476,7 @@ export async function runCodexAppServerAttempt(
       clearSharedCodexAppServerClient();
     } else {
       isolatedStartupAbortController?.abort(error);
+      closeIsolatedStartupClient();
     }
     params.abortSignal?.removeEventListener("abort", abortFromUpstream);
     throw error;
@@ -804,6 +818,9 @@ export async function runCodexAppServerAttempt(
     notificationCleanup();
     requestCleanup();
     nativeHookRelay?.unregister();
+    if (useIsolatedStartupClient) {
+      closeIsolatedStartupClient();
+    }
     await runAgentCleanupStep({
       runId: params.runId,
       sessionId: params.sessionId,
@@ -1031,7 +1048,7 @@ export async function runCodexAppServerAttempt(
     requestCleanup();
     nativeHookRelay?.unregister();
     if (useIsolatedStartupClient) {
-      client.close();
+      closeIsolatedStartupClient();
     }
     runAbortController.signal.removeEventListener("abort", abortListener);
     params.abortSignal?.removeEventListener("abort", abortFromUpstream);

@@ -1666,6 +1666,67 @@ describe("runCodexAppServerAttempt", () => {
     expect(isolatedClient.close).toHaveBeenCalledTimes(1);
   });
 
+  it("closes an isolated app-server client when startup times out after client creation", async () => {
+    const isolatedClient = {
+      request: vi.fn(async (method: string) =>
+        method === "thread/start" ? await new Promise<never>(() => undefined) : {},
+      ),
+      addNotificationHandler: vi.fn(() => () => undefined),
+      addRequestHandler: vi.fn(() => () => undefined),
+      close: vi.fn(),
+    };
+
+    sharedClientMocks.createIsolatedCodexAppServerClientMock.mockResolvedValue(isolatedClient);
+    __testing.setCodexAppServerClientFactoryForTests(async () => {
+      throw new Error("shared client should not be used for spawned runs");
+    });
+
+    const params = createParams(
+      path.join(tempDir, "session.jsonl"),
+      path.join(tempDir, "workspace"),
+    );
+    params.spawnedBy = "agent:main:session-1";
+    params.timeoutMs = 1;
+
+    await expect(runCodexAppServerAttempt(params, { startupTimeoutFloorMs: 1 })).rejects.toThrow(
+      "codex app-server startup timed out",
+    );
+    expect(sharedClientMocks.clearSharedCodexAppServerClientMock).not.toHaveBeenCalled();
+    expect(isolatedClient.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes an isolated app-server client when turn start fails", async () => {
+    const isolatedClient = {
+      request: vi.fn(async (method: string) => {
+        if (method === "thread/start") {
+          return threadStartResult("thread-1");
+        }
+        if (method === "turn/start") {
+          throw new Error("turn/start failed");
+        }
+        return {};
+      }),
+      addNotificationHandler: vi.fn(() => () => undefined),
+      addRequestHandler: vi.fn(() => () => undefined),
+      close: vi.fn(),
+    };
+
+    sharedClientMocks.createIsolatedCodexAppServerClientMock.mockResolvedValue(isolatedClient);
+    __testing.setCodexAppServerClientFactoryForTests(async () => {
+      throw new Error("shared client should not be used for spawned runs");
+    });
+
+    const params = createParams(
+      path.join(tempDir, "session.jsonl"),
+      path.join(tempDir, "workspace"),
+    );
+    params.spawnedBy = "agent:main:session-1";
+
+    await expect(runCodexAppServerAttempt(params)).rejects.toThrow("turn/start failed");
+    expect(sharedClientMocks.clearSharedCodexAppServerClientMock).not.toHaveBeenCalled();
+    expect(isolatedClient.close).toHaveBeenCalledTimes(1);
+  });
+
   it("does not isolate runs based on subagent session keys alone", async () => {
     const sharedClient = {
       request: vi.fn(async (method: string) => {
