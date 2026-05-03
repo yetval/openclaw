@@ -1897,6 +1897,69 @@ describe("runCodexAppServerAttempt", () => {
     expect(isolatedClient.close).toHaveBeenCalledTimes(1);
   });
 
+  it("retries isolated app-server startup when the client closes during thread setup", async () => {
+    let notify: ((notification: CodexServerNotification) => Promise<void>) | undefined;
+    const firstIsolatedClient = {
+      request: vi.fn(async (method: string) => {
+        if (method === "thread/start") {
+          throw new Error("codex app-server client is closed");
+        }
+        return {};
+      }),
+      addNotificationHandler: vi.fn(() => () => undefined),
+      addRequestHandler: vi.fn(() => () => undefined),
+      close: vi.fn(),
+    };
+    const secondIsolatedClient = {
+      request: vi.fn(async (method: string) => {
+        if (method === "thread/start") {
+          return threadStartResult("thread-1");
+        }
+        if (method === "turn/start") {
+          return turnStartResult("turn-1", "inProgress");
+        }
+        return {};
+      }),
+      addNotificationHandler: vi.fn((handler: typeof notify) => {
+        notify = handler;
+        return () => undefined;
+      }),
+      addRequestHandler: vi.fn(() => () => undefined),
+      close: vi.fn(),
+    };
+
+    sharedClientMocks.createIsolatedCodexAppServerClientMock
+      .mockResolvedValueOnce(firstIsolatedClient)
+      .mockResolvedValueOnce(secondIsolatedClient);
+    __testing.setCodexAppServerClientFactoryForTests(async () => {
+      throw new Error("shared client should not be used for spawned runs");
+    });
+
+    const params = createParams(
+      path.join(tempDir, "session.jsonl"),
+      path.join(tempDir, "workspace"),
+    );
+    params.spawnedBy = "agent:main:session-1";
+
+    const run = runCodexAppServerAttempt(params);
+    await vi.waitFor(() =>
+      expect(sharedClientMocks.createIsolatedCodexAppServerClientMock).toHaveBeenCalledTimes(2),
+    );
+    await vi.waitFor(() => expect(notify).toBeTypeOf("function"));
+    await notify?.({
+      method: "turn/completed",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        turn: { id: "turn-1", status: "completed" },
+      },
+    });
+    await expect(run).resolves.toMatchObject({ aborted: false, timedOut: false });
+    expect(firstIsolatedClient.close).toHaveBeenCalledTimes(1);
+    expect(secondIsolatedClient.close).toHaveBeenCalledTimes(1);
+    expect(sharedClientMocks.clearSharedCodexAppServerClientIfCurrentMock).not.toHaveBeenCalled();
+  });
+
   it("closes an isolated app-server client when startup times out after client creation", async () => {
     const isolatedClient = {
       request: vi.fn(async (method: string) =>

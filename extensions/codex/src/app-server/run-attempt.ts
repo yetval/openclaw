@@ -555,50 +555,30 @@ export async function runCodexAppServerAttempt(
       timeoutFloorMs: options.startupTimeoutFloorMs,
       signal: runAbortController.signal,
       operation: async () => {
-        if (useIsolatedStartupClient) {
-          const startupClient = await createIsolatedCodexAppServerClient({
-            startOptions: appServer.start,
-            timeoutMs: params.timeoutMs,
-            authProfileId: startupAuthProfileId,
-            agentDir,
-            signal: isolatedStartupAbortController?.signal,
-          });
-          isolatedStartupClient = startupClient;
-          if (runAbortController.signal.aborted || isolatedStartupAbortController?.signal.aborted) {
-            closeIsolatedStartupClient();
-            throw new Error("codex app-server startup aborted");
-          }
-          try {
-            await ensureCodexComputerUse({
-              client: startupClient,
-              pluginConfig: options.pluginConfig,
-              timeoutMs: appServer.requestTimeoutMs,
-              signal: runAbortController.signal,
-            });
-            const startupThread = await startOrResumeThread({
-              client: startupClient,
-              params,
-              cwd: effectiveWorkspace,
-              dynamicTools: toolBridge.specs,
-              appServer,
-              developerInstructions: promptBuild.developerInstructions,
-              config: threadConfig,
-            });
-            return { client: startupClient, thread: startupThread };
-          } catch (error) {
-            closeIsolatedStartupClient();
-            throw error;
-          }
-        }
         let attemptedClient: CodexAppServerClient | undefined;
         const startupAttempt = async () => {
-          const startupClient = await clientFactory(
-            appServer.start,
-            startupAuthProfileId,
-            agentDir,
-          );
+          const startupClient = useIsolatedStartupClient
+            ? await createIsolatedCodexAppServerClient({
+                startOptions: appServer.start,
+                timeoutMs: params.timeoutMs,
+                authProfileId: startupAuthProfileId,
+                agentDir,
+                signal: isolatedStartupAbortController?.signal,
+              })
+            : await clientFactory(appServer.start, startupAuthProfileId, agentDir);
           attemptedClient = startupClient;
-          startupClientForCleanup = startupClient;
+          if (useIsolatedStartupClient) {
+            isolatedStartupClient = startupClient;
+            if (
+              runAbortController.signal.aborted ||
+              isolatedStartupAbortController?.signal.aborted
+            ) {
+              closeIsolatedStartupClient();
+              throw new Error("codex app-server startup aborted");
+            }
+          } else {
+            startupClientForCleanup = startupClient;
+          }
           await ensureCodexComputerUse({
             client: startupClient,
             pluginConfig: options.pluginConfig,
@@ -631,9 +611,19 @@ export async function runCodexAppServerAttempt(
               throw error;
             }
             const failedClient = attemptedClient;
-            const clearedSharedClient = clearSharedCodexAppServerClientIfCurrent(failedClient);
-            if (startupClientForCleanup === failedClient) {
-              startupClientForCleanup = undefined;
+            let clearedSharedClient = false;
+            if (useIsolatedStartupClient) {
+              if (failedClient) {
+                failedClient.close();
+              }
+              if (isolatedStartupClient === failedClient) {
+                isolatedStartupClient = undefined;
+              }
+            } else {
+              clearedSharedClient = clearSharedCodexAppServerClientIfCurrent(failedClient);
+              if (startupClientForCleanup === failedClient) {
+                startupClientForCleanup = undefined;
+              }
             }
             attemptedClient = undefined;
             if (attempt >= CODEX_APP_SERVER_STARTUP_CONNECTION_CLOSE_MAX_ATTEMPTS) {
