@@ -143,7 +143,10 @@ import {
   type CodexAppServerThreadBinding,
 } from "./session-binding.js";
 import { readCodexMirroredSessionHistoryMessages } from "./session-history.js";
-import { clearSharedCodexAppServerClientIfCurrent } from "./shared-client.js";
+import {
+  clearSharedCodexAppServerClientIfCurrent,
+  createIsolatedCodexAppServerClient,
+} from "./shared-client.js";
 import {
   areCodexDynamicToolFingerprintsCompatible,
   buildDeveloperInstructions,
@@ -214,6 +217,13 @@ type CodexToolReportEntry = CodexSystemPromptReport["tools"]["entries"][number];
 type CodexWorkspaceBootstrapContext = CodexBootstrapContext & { promptContext?: string };
 
 let openClawCodingToolsFactoryForTests: OpenClawCodingToolsFactory | undefined;
+
+function shouldUseIsolatedCodexAppServerClient(params: EmbeddedRunAttemptParams): boolean {
+  // Spawned/helper runs should not be able to poison the shared Codex client
+  // used by the main session. Keep their app-server startup isolated so auth
+  // failures only fail the child run.
+  return Boolean(params.spawnedBy?.trim());
+}
 
 function emitCodexAppServerEvent(
   params: EmbeddedRunAttemptParams,
@@ -1140,6 +1150,10 @@ export async function runCodexAppServerAttempt(
     timeoutMs: params.timeoutMs,
     timeoutFloorMs: options.startupTimeoutFloorMs,
   });
+  const useIsolatedStartupClient = shouldUseIsolatedCodexAppServerClient(params);
+  const isolatedStartupAbortController = useIsolatedStartupClient
+    ? new AbortController()
+    : undefined;
   try {
     emitCodexAppServerEvent(params, {
       stream: "codex_app_server.lifecycle",
@@ -1214,12 +1228,21 @@ export async function runCodexAppServerAttempt(
       operation: async () => {
         let attemptedClient: CodexAppServerClient | undefined;
         const startupAttempt = async () => {
-          const startupClient = await attemptClientFactory(
-            appServer.start,
-            startupAuthProfileId,
-            agentDir,
-            params.config,
-          );
+          const startupClient = useIsolatedStartupClient
+            ? await createIsolatedCodexAppServerClient({
+                startOptions: appServer.start,
+                timeoutMs: params.timeoutMs,
+                authProfileId: startupAuthProfileId,
+                agentDir,
+                config: params.config,
+                signal: isolatedStartupAbortController?.signal,
+              })
+            : await attemptClientFactory(
+                appServer.start,
+                startupAuthProfileId,
+                agentDir,
+                params.config,
+              );
           attemptedClient = startupClient;
           startupClientForCleanup = startupClient;
           await ensureCodexComputerUse({
@@ -1284,6 +1307,9 @@ export async function runCodexAppServerAttempt(
             }
             const failedClient = attemptedClient;
             const clearedSharedClient = clearSharedCodexAppServerClientIfCurrent(failedClient);
+            if (useIsolatedStartupClient && failedClient && !clearedSharedClient) {
+              failedClient.close();
+            }
             if (startupClientForCleanup === failedClient) {
               startupClientForCleanup = undefined;
             }
@@ -1322,7 +1348,13 @@ export async function runCodexAppServerAttempt(
     });
   } catch (error) {
     nativeHookRelay?.unregister();
-    clearSharedCodexAppServerClientIfCurrent(startupClientForCleanup);
+    const clearedSharedOnError = clearSharedCodexAppServerClientIfCurrent(startupClientForCleanup);
+    if (useIsolatedStartupClient) {
+      isolatedStartupAbortController?.abort(error);
+      if (startupClientForCleanup && !clearedSharedOnError) {
+        startupClientForCleanup.close();
+      }
+    }
     params.abortSignal?.removeEventListener("abort", abortFromUpstream);
     throw error;
   }
@@ -2729,6 +2761,9 @@ export async function runCodexAppServerAttempt(
     requestCleanup();
     closeCleanup?.();
     nativeHookRelay?.unregister();
+    if (useIsolatedStartupClient) {
+      client.close();
+    }
     runAbortController.signal.removeEventListener("abort", abortListener);
     params.abortSignal?.removeEventListener("abort", abortFromUpstream);
     steeringQueue?.cancel();
