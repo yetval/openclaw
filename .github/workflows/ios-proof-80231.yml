@@ -1,0 +1,123 @@
+name: iOS Proof 80231
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch or SHA to build
+        required: true
+        default: fix/ios-group-chat-realtime-80231
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-launch:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Checkout PR ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      - name: Select Xcode 16
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer || \
+            sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+          xcrun simctl list runtimes | head -20
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Boot simulator
+        id: sim
+        run: |
+          UDID=$(xcrun simctl list devices available --json | python3 -c '
+          import json,sys
+          d=json.load(sys.stdin)["devices"]
+          for runtime,devs in d.items():
+            if "iOS" not in runtime: continue
+            for x in devs:
+              if x.get("isAvailable") and "iPhone" in x["name"]:
+                print(x["udid"]); sys.exit(0)
+          ')
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl list devices booted
+
+      - name: Generate Xcode project
+        working-directory: apps/ios
+        run: |
+          bash ../../scripts/ios-configure-signing.sh || true
+          bash ../../scripts/ios-write-version-xcconfig.sh || true
+          xcodegen generate
+
+      - name: Build OpenClaw for simulator
+        working-directory: apps/ios
+        env:
+          UDID: ${{ steps.sim.outputs.udid }}
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project OpenClaw.xcodeproj \
+            -scheme OpenClaw \
+            -destination "platform=iOS Simulator,id=$UDID" \
+            -configuration Debug \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tee build.log | tail -200
+          APP=$(find build/Build/Products -name "OpenClaw.app" -type d | head -1)
+          echo "APP_PATH=$APP" >> "$GITHUB_ENV"
+          echo "Found app at: $APP"
+          ls -la "$APP"
+
+      - name: Install and launch app
+        env:
+          UDID: ${{ steps.sim.outputs.udid }}
+        run: |
+          xcrun simctl install "$UDID" "$APP_PATH"
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist")
+          echo "Bundle: $BUNDLE_ID"
+          xcrun simctl launch "$UDID" "$BUNDLE_ID" || true
+          sleep 8
+
+      - name: Capture screenshot
+        env:
+          UDID: ${{ steps.sim.outputs.udid }}
+        run: |
+          mkdir -p artifacts
+          xcrun simctl io "$UDID" screenshot artifacts/launch.png
+          ls -la artifacts/
+
+      - name: Capture sim log tail
+        env:
+          UDID: ${{ steps.sim.outputs.udid }}
+        run: |
+          xcrun simctl spawn "$UDID" log show --predicate 'subsystem == "ai.openclaw"' --last 2m --style compact > artifacts/openclaw.log 2>&1 || true
+          tail -100 artifacts/openclaw.log || true
+
+      - name: Upload proof artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-proof-80231
+          path: |
+            artifacts/launch.png
+            artifacts/openclaw.log
+            apps/ios/build.log
