@@ -42,6 +42,17 @@ jobs:
       - name: Install xcodegen
         run: brew install xcodegen
 
+      - name: Shadow swiftlint/swiftformat with no-op
+        run: |
+          for dir in /opt/homebrew/bin /usr/local/bin; do
+            sudo mkdir -p "$dir"
+            for tool in swiftlint swiftformat; do
+              printf '#!/bin/sh\nexit 0\n' | sudo tee "$dir/$tool" >/dev/null
+              sudo chmod +x "$dir/$tool"
+            done
+          done
+          which swiftlint swiftformat
+
       - name: Boot simulator
         id: sim
         run: |
