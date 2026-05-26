@@ -1,6 +1,9 @@
 name: iOS Proof 80231
 
 on:
+  push:
+    branches:
+      - ci/ios-proof-80231
   workflow_dispatch:
     inputs:
       ref:
@@ -19,7 +22,8 @@ jobs:
       - name: Checkout PR ref
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          repository: yetval/openclaw
+          ref: ${{ inputs.ref || 'fix/ios-group-chat-realtime-80231' }}
           fetch-depth: 0
 
       - name: Select Xcode 16
