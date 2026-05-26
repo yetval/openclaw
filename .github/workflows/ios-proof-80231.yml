@@ -93,7 +93,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             build 2>&1 | tee build.log | tail -200
-          APP=$(find build/Build/Products -name "OpenClaw.app" -type d | head -1)
+          APP=$(find "$PWD/build/Build/Products" -name "OpenClaw.app" -type d | head -1)
           echo "APP_PATH=$APP" >> "$GITHUB_ENV"
           echo "Found app at: $APP"
           ls -la "$APP"
