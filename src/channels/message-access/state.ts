@@ -424,6 +424,7 @@ async function resolveIngressAllowlist(params: {
     matchedEntryIds: match.matchedEntryIds,
     hasConfiguredEntries: entries.length > 0,
     hasMatchableEntries: direct.normalizedEntries.length > 0 || groups.normalizedEntries.length > 0,
+    hasLiteralWildcard: directEntries.includes("*"),
     hasWildcard:
       directEntries.includes("*") ||
       direct.normalizedEntries.some((entry) => entry.wildcard === true),
