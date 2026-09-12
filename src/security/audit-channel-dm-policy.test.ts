@@ -633,6 +633,36 @@ describe("security audit channel dm wildcard allowlists", () => {
     expect(findings[0]).toMatchObject({ severity: "info" });
   });
 
+  async function openDmCheckIds(allowFrom: Array<string | number>): Promise<string[]> {
+    const findings = await collectChannelSecurityFindingsCore({
+      cfg: { agents: { entries: { main: {} } } },
+      plugins: [
+        createDmPlugin({
+          accounts: { default: { policy: "open", allowFrom } },
+          normalizeEntry: stripChannelPrefix,
+        }),
+      ],
+    });
+    return findings
+      .filter((finding) => finding.checkId.startsWith("channels.whatsapp.dm."))
+      .map((finding) => finding.checkId);
+  }
+
+  it.each([["whatsapp:*"], ["user:*"]])(
+    "keeps the open DM validity warning for %s",
+    async (entry) => {
+      const checkIds = await openDmCheckIds([entry]);
+      expect(checkIds).toContain("channels.whatsapp.dm.open");
+      expect(checkIds).toContain("channels.whatsapp.dm.open_invalid");
+    },
+  );
+
+  it("omits the open DM validity warning for a literal wildcard", async () => {
+    const checkIds = await openDmCheckIds(["*"]);
+    expect(checkIds).toContain("channels.whatsapp.dm.open");
+    expect(checkIds).not.toContain("channels.whatsapp.dm.open_invalid");
+  });
+
   it("evaluates the anyone principal for a prefixed wildcard", async () => {
     const findings = await collectChannelSecurityFindingsCore({
       cfg: { agents: { entries: { main: {}, research: {} } } },
