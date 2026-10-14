@@ -74,6 +74,28 @@ describe("searxng web search provider", () => {
     });
   });
 
+  it("falls back to tools.web.search maxResults and timeoutSeconds", async () => {
+    const tool = expectDefined(
+      createSearxngWebSearchProvider().createTool({
+        config: {},
+        searchConfig: { maxResults: 8, timeoutSeconds: 45 },
+      }),
+      "SearXNG search tool",
+    );
+
+    await tool.execute({ query: "openclaw docs" });
+    await tool.execute({ query: "openclaw docs", count: 3 });
+
+    expect(runSearxngSearch).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ count: 8, timeoutSeconds: 45 }),
+    );
+    expect(runSearxngSearch).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ count: 3, timeoutSeconds: 45 }),
+    );
+  });
+
   it("rejects fractional and out-of-range counts before searching", async () => {
     const tool = createTool();
 

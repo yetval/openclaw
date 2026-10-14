@@ -58,6 +58,30 @@ describe("duckduckgo web search provider", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("falls back to tools.web.search maxResults when count is omitted", async () => {
+    const searchConfig = { maxResults: 7, cacheTtlMinutes: 0 };
+    const tool = createDuckDuckGoWebSearchProvider().createTool({
+      config: { tools: { web: { search: searchConfig } } },
+      searchConfig,
+    });
+    if (!tool) {
+      throw new Error("Expected tool definition");
+    }
+    const html = Array.from(
+      { length: 10 },
+      (_, index) =>
+        `<a class="result__a" href="https://example.com/${index}">Result ${index}</a>` +
+        `<a class="result__snippet">Snippet ${index}</a>`,
+    ).join("");
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => new Response(html, { headers: { "content-type": "text/html" } }),
+    );
+
+    const payload = await tool.execute({ query: "duckduckgo configured max results" });
+
+    expect(readSearchResults(payload)).toHaveLength(7);
+  });
+
   it("rejects an already canceled search without fetching", async () => {
     const tool = createSearchTool();
     const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected search"));

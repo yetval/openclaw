@@ -1,5 +1,6 @@
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import { readPositiveIntegerParam, readStringParam } from "openclaw/plugin-sdk/param-readers";
+import type { SearchConfigRecord } from "openclaw/plugin-sdk/provider-web-search";
 import {
   createWebSearchProviderContractFields,
   type WebSearchProviderPlugin,
@@ -59,16 +60,19 @@ export function createSearxngWebSearchProvider(): WebSearchProviderPlugin {
         "Search the web using a self-hosted SearXNG instance. Returns titles, URLs, and snippets.",
       parameters: SearxngSearchSchema,
       execute: async (args, context) => {
+        const searchConfig: SearchConfigRecord | undefined = ctx.searchConfig;
         const { runSearxngSearch } = await loadSearxngClientModule();
         return await runSearxngSearch({
           config: ctx.config,
           query: readStringParam(args, "query", { required: true }),
-          count: readPositiveIntegerParam(args, "count", {
-            max: 10,
-            message: "count must be an integer from 1 to 10.",
-          }),
+          count:
+            readPositiveIntegerParam(args, "count", {
+              max: 10,
+              message: "count must be an integer from 1 to 10.",
+            }) ?? searchConfig?.maxResults,
           categories: readStringParam(args, "categories"),
           language: readStringParam(args, "language"),
+          timeoutSeconds: searchConfig?.timeoutSeconds,
           signal: context?.signal,
         });
       },
