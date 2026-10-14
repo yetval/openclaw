@@ -481,6 +481,84 @@ describe("persistPluginInstall enablement", () => {
     });
   });
 
+  it("enables a mixed-case plugin id whose settings use the lowercase policy key", async () => {
+    const { persistPluginInstall } = await import("./install-persistence.js");
+    const warn = vi.fn();
+    const baseConfig = {
+      plugins: {
+        entries: {
+          myplug: { enabled: true, config: { token: "abc" } },
+        },
+      },
+    } as OpenClawConfig;
+    loadPluginManifestRegistryMock.mockReturnValue({
+      plugins: [
+        createManifestRecord("MyPlug", {
+          configSchema: {
+            type: "object",
+            required: ["token"],
+            properties: { token: { type: "string" } },
+          },
+        }),
+      ],
+      diagnostics: [],
+    });
+
+    const next = await persistPluginInstall({
+      snapshot: installSnapshot(baseConfig),
+      pluginId: "MyPlug",
+      persistenceLogger: { warn },
+      install: { source: "npm", spec: "myplug@1.0.0", installPath: "/tmp/myplug" },
+    });
+
+    expect(next.plugins?.entries).toEqual({
+      myplug: { enabled: true, config: { token: "abc" } },
+    });
+    expect(enablePluginInConfigMock).toHaveBeenCalledWith(expect.anything(), "MyPlug", {
+      updateChannelConfig: false,
+    });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("stages a mixed-case plugin id disabled under its lowercase policy key", async () => {
+    const { persistPluginInstall } = await import("./install-persistence.js");
+    const baseConfig = {
+      plugins: {
+        deny: ["myplug"],
+        entries: {
+          myplug: { hooks: { timeoutMs: 5_000 } },
+        },
+      },
+    } as OpenClawConfig;
+    loadPluginManifestRegistryMock.mockReturnValue({
+      plugins: [
+        createManifestRecord("MyPlug", {
+          configSchema: {
+            type: "object",
+            required: ["token"],
+            properties: { token: { type: "string" } },
+          },
+        }),
+      ],
+      diagnostics: [],
+    });
+
+    const next = await persistPluginInstall({
+      snapshot: installSnapshot(baseConfig),
+      pluginId: "MyPlug",
+      install: { source: "npm", spec: "myplug@1.0.0", installPath: "/tmp/myplug" },
+    });
+
+    expect(next).toEqual({
+      plugins: {
+        entries: {
+          myplug: { enabled: false, hooks: { timeoutMs: 5_000 } },
+        },
+      },
+    });
+    expect(enablePluginInConfigMock).not.toHaveBeenCalled();
+  });
+
   it("rejects a malformed manifest schema instead of treating it as missing config", async () => {
     const { persistPluginInstall } = await import("./install-persistence.js");
     const baseConfig = {
