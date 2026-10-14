@@ -1,4 +1,4 @@
-import { Document, isMap, isSeq, LineCounter, parseDocument, type Node } from "yaml";
+import { Document, isMap, isSeq, LineCounter, parseDocument, visit, type Node } from "yaml";
 import type { OcPath } from "../oc-path.js";
 import { formatOcPath } from "../oc-path.js";
 import { guardSentinel } from "../sentinel.js";
@@ -31,7 +31,7 @@ export function setYamlOcPath(ast: YamlAst, path: OcPath, newValue: unknown): Ya
     return { ok: false, reason: "unresolved" };
   }
 
-  const { doc: cloned, lineCounter } = cloneDoc(ast.doc);
+  const { doc: cloned, lineCounter } = cloneDoc(ast);
   cloned.setIn(segments, newValue);
   return { ok: true, ast: { kind: "yaml", raw: cloned.toString(), doc: cloned, lineCounter } };
 }
@@ -55,7 +55,7 @@ export function insertYamlOcPath(
     return { ok: false, reason: "unresolved" };
   }
   const segments = match.kind === "root" ? [] : match.path;
-  const { doc: cloned, lineCounter } = cloneDoc(ast.doc);
+  const { doc: cloned, lineCounter } = cloneDoc(ast);
 
   const parent = segments.length === 0 ? cloned.contents : cloned.getIn(segments, false);
   if (parent === undefined || parent === null) {
@@ -113,12 +113,25 @@ function guardYamlSentinel(value: unknown, ocPath: string): void {
   }
 }
 
-function cloneDoc(doc: Document.Parsed): { doc: Document.Parsed; lineCounter: LineCounter } {
+function cloneDoc(ast: YamlAst): { doc: Document.Parsed; lineCounter: LineCounter } {
   const lineCounter = new LineCounter();
-  const cloned = parseDocument(doc.toString(), {
+  const cloned = parseDocument(ast.raw, {
     keepSourceTokens: true,
     prettyErrors: false,
     lineCounter,
+  });
+  visit(cloned, {
+    Scalar(key, node) {
+      const source = node.source ?? "";
+      if (
+        key !== "key" &&
+        typeof node.value === "number" &&
+        !Number.isSafeInteger(node.value) &&
+        /^(?:[-+]?\d+|0x[\da-fA-F]+|0o[0-7]+)$/.test(source)
+      ) {
+        node.value = BigInt(source);
+      }
+    },
   });
   return { doc: cloned, lineCounter };
 }

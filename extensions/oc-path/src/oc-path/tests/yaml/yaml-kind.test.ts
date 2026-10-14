@@ -51,6 +51,23 @@ describe("setYamlOcPath — direct", () => {
       expect(r.reason).toBe("parse-error");
     }
   });
+
+  it("keeps untouched unsafe integers exact when editing a sibling", () => {
+    const big = "  id: 1234567890123456789\n  neg: -98765432109876543210\n";
+    const { ast } = parseYaml(`a:\n${big}  b: 1\n`);
+    const set = setYamlOcPath(ast, parseOcPath("oc://k.yaml/a/b"), 2);
+    expect(set.ok).toBe(true);
+    if (!set.ok) {
+      return;
+    }
+    expect(set.ast.raw).toBe(`a:\n${big}  b: 2\n`);
+    const marker = { kind: "keyed" as const, key: "c" };
+    const inserted = insertYamlOcPath(set.ast, parseOcPath("oc://k.yaml/a"), marker, 3);
+    expect(inserted.ok).toBe(true);
+    if (inserted.ok) {
+      expect(inserted.ast.raw).toBe(`a:\n${big}  b: 2\n  c: 3\n`);
+    }
+  });
 });
 
 describe("setYamlOcPath — positional tokens", () => {
