@@ -41,6 +41,7 @@ import {
   formatDuplicateTelegramTokenReason,
   inspectTelegramAccount,
 } from "./account-inspect.js";
+import { resolveTelegramAccountConfig } from "./account-config.js";
 import {
   resolveDefaultTelegramAccountId,
   resolveTelegramAccount,
@@ -772,7 +773,7 @@ export const telegramPlugin = createChatChannelPlugin({
       },
       auditAccount: async ({ account, timeoutMs, probe, cfg }) => {
         const groups =
-          cfg.channels?.telegram?.accounts?.[account.accountId]?.groups ??
+          resolveTelegramAccountConfig(cfg, account.accountId)?.groups ??
           cfg.channels?.telegram?.groups;
         const collectGroupIds =
           getOptionalTelegramRuntime()?.channel?.telegram?.collectTelegramUnmentionedGroupIds ??
