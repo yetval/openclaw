@@ -22,9 +22,9 @@ describe("resolveTelegramGroupRequireMention", () => {
   } as OpenClawConfig;
 
   it("reads groups from a mixed-case account key using the normalized account id", () => {
-    expect(
-      resolveTelegramGroupRequireMention({ cfg, groupId: "-100123", accountId: "work" }),
-    ).toBe(false);
+    expect(resolveTelegramGroupRequireMention({ cfg, groupId: "-100123", accountId: "work" })).toBe(
+      false,
+    );
     expect(
       resolveTelegramGroupRequireMention({ cfg, groupId: "-100123:topic:7", accountId: "work" }),
     ).toBe(true);

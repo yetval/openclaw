@@ -17,6 +17,7 @@ import {
   expandTelegramAllowFromWithAccessGroups,
   resolveTelegramDmAllow,
 } from "./access-groups.js";
+import { resolveTelegramAccountConfig } from "./account-config.js";
 import { resolveTelegramAccountOwnerAgentId } from "./account-owner.js";
 import { resolveDefaultTelegramAccountId } from "./accounts.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
@@ -374,7 +375,7 @@ export const buildTelegramMessageContext = async ({
     sessionKey,
     acpBinding: bindingMode.kind === "configured",
     effectiveDmAllow: dmAllow.effectiveAllow,
-    providerMentionPatterns: cfg.channels?.telegram?.accounts?.[account.accountId]?.mentionPatterns,
+    providerMentionPatterns: resolveTelegramAccountConfig(cfg, account.accountId)?.mentionPatterns,
     requireMention,
     isBotOwnedThread,
     requireMentionInBotThreads,

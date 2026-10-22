@@ -36,12 +36,12 @@ import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { resolveTelegramAccountConfig } from "./account-config.js";
 import {
   findTelegramTokenOwnerAccountId,
   formatDuplicateTelegramTokenReason,
   inspectTelegramAccount,
 } from "./account-inspect.js";
-import { resolveTelegramAccountConfig } from "./account-config.js";
 import {
   resolveDefaultTelegramAccountId,
   resolveTelegramAccount,
