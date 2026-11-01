@@ -4,7 +4,10 @@ import {
   type GeneratedImageAsset,
   type ImageGenerationProvider,
 } from "openclaw/plugin-sdk/image-generation";
-import { resolveGeneratedImageDownloadMaxBytes } from "openclaw/plugin-sdk/media-generation-runtime";
+import {
+  resolveClosestAspectRatio,
+  resolveGeneratedImageDownloadMaxBytes,
+} from "openclaw/plugin-sdk/media-generation-runtime";
 import { parseStrictPositiveInteger } from "openclaw/plugin-sdk/number-runtime";
 import { isProviderApiKeyConfiguredAsync } from "openclaw/plugin-sdk/provider-auth";
 import {
@@ -21,6 +24,7 @@ import { resolveGoogleGenerationApiKey } from "./generation-auth.js";
 import {
   createGoogleImageGenerationProviderMetadata,
   DEFAULT_GOOGLE_IMAGE_MODEL,
+  GOOGLE_IMAGE_ASPECT_RATIOS,
   GOOGLE_MAX_IMAGE_RESULTS,
 } from "./generation-provider-metadata.js";
 import { resolveGoogleGenerativeAiHttpRequestConfig } from "./http-request.js";
@@ -33,28 +37,18 @@ const GOOGLE_IMAGE_MALFORMED_RESPONSE = "Google image generation response malfor
 function mapSizeToImageConfig(
   size: string | undefined,
 ): { aspectRatio?: string; imageSize?: "2K" | "4K" } | undefined {
-  const normalized = normalizeLowercaseStringOrEmpty(size);
-  const mapping = new Map<string, string>([
-    ["1024x1024", "1:1"],
-    ["1024x1536", "2:3"],
-    ["1536x1024", "3:2"],
-    ["1024x1792", "9:16"],
-    ["1792x1024", "16:9"],
-  ]);
-  const aspectRatio = mapping.get(normalized);
-
-  const [widthRaw, heightRaw] = normalized.split("x");
+  const [widthRaw, heightRaw] = normalizeLowercaseStringOrEmpty(size).split("x");
   const width = parseStrictPositiveInteger(widthRaw);
   const height = parseStrictPositiveInteger(heightRaw);
   if (width === undefined || height === undefined) {
     return undefined;
   }
+  const aspectRatio = resolveClosestAspectRatio({
+    requestedSize: size,
+    supportedAspectRatios: GOOGLE_IMAGE_ASPECT_RATIOS,
+  });
   const longestEdge = Math.max(width, height);
   const imageSize = longestEdge >= 3072 ? "4K" : longestEdge >= 1536 ? "2K" : undefined;
-
-  if (!aspectRatio && !imageSize) {
-    return undefined;
-  }
 
   return {
     ...(aspectRatio ? { aspectRatio } : {}),

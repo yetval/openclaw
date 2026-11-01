@@ -13,6 +13,18 @@ import type {
 
 export const DEFAULT_GOOGLE_IMAGE_MODEL = "gemini-3.1-flash-image";
 export const GOOGLE_MAX_IMAGE_RESULTS = 4;
+export const GOOGLE_IMAGE_ASPECT_RATIOS = [
+  "1:1",
+  "2:3",
+  "3:2",
+  "3:4",
+  "4:3",
+  "4:5",
+  "5:4",
+  "9:16",
+  "16:9",
+  "21:9",
+] as const;
 
 export const GOOGLE_MEDIA_UNDERSTANDING_DEFAULT_MODELS = {
   image: "gemini-3-flash-preview",
@@ -72,8 +84,7 @@ export function createGoogleImageGenerationProviderMetadata(): Omit<
         supportsResolution: true,
       },
       geometry: {
-        sizes: ["1024x1024", "1024x1536", "1536x1024", "1024x1792", "1792x1024"],
-        aspectRatios: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"],
+        aspectRatios: [...GOOGLE_IMAGE_ASPECT_RATIOS],
         resolutions: ["1K", "2K", "4K"],
       },
     },

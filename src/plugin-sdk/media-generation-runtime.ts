@@ -1,4 +1,7 @@
-export { resolveClosestSize } from "../../packages/media-generation-core/src/normalization.js";
+export {
+  resolveClosestAspectRatio,
+  resolveClosestSize,
+} from "../../packages/media-generation-core/src/normalization.js";
 export {
   resolveGeneratedImageDownloadMaxBytes,
   resolveGeneratedMediaMaxBytes,

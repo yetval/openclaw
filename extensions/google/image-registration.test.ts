@@ -54,7 +54,6 @@ it("registers independent image metadata without loading the runtime and delegat
         supportsResolution: true,
       },
       geometry: {
-        sizes: ["1024x1024", "1024x1536", "1536x1024", "1024x1792", "1792x1024"],
         aspectRatios: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"],
         resolutions: ["1K", "2K", "4K"],
       },
@@ -67,7 +66,6 @@ it("registers independent image metadata without loading the runtime and delegat
   second.models?.push("fixture-mutated-model");
   second.capabilities.generate.maxCount = 99;
   second.capabilities.edit.maxInputImages = 99;
-  second.capabilities.geometry?.sizes?.push("fixture-mutated-size");
   second.capabilities.geometry?.aspectRatios?.push("fixture-mutated-ratio");
   second.capabilities.geometry?.resolutions?.push("4K");
   expect(JSON.stringify(metadata)).toBe(JSON.stringify(expectedMetadata));

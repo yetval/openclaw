@@ -115,6 +115,24 @@ it("generates image buffers from the Gemini generateContent API", async () => {
 });
 
 it.each([
+  ["3840x2160", { aspectRatio: "16:9", imageSize: "4K" }],
+  ["2160x3840", { aspectRatio: "9:16", imageSize: "4K" }],
+  ["2048x2048", { aspectRatio: "1:1", imageSize: "2K" }],
+  ["2560x1080", { aspectRatio: "21:9", imageSize: "2K" }],
+  ["1024x1792", { aspectRatio: "9:16", imageSize: "2K" }],
+  ["1024x1024", { aspectRatio: "1:1" }],
+])("maps requested size %s to Gemini image config", async (size, imageConfig) => {
+  const fetchMock = installGoogleFetchMock();
+  await generateImage({ size });
+  expectGenerationRequest(
+    fetchMock,
+    "gemini-3.1-flash-image",
+    [{ text: "draw a cat" }],
+    imageConfig,
+  );
+});
+
+it.each([
   [
     { ssrfPolicy: { allowRfc2544BenchmarkRange: true } },
     { ssrfPolicy: { allowRfc2544BenchmarkRange: true } },
